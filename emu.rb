@@ -11,9 +11,6 @@ def load_rom(file)
 	file_data.split("").each do |chr|
 		rom << chr.ord()
 	end
-	#file_data.split("").each_slice(2) do |op_arr|
-	#	rom << op_arr.join.unpack("n").first
-	#end
 	f.close()
 	return rom
 end
@@ -27,7 +24,6 @@ class Device < Gosu::Window
 	end
 	def update()
 		@emulator.tick()
-		#puts "TICK"
 	end
 	def draw()
 		@emulator.DISPLAY_HEIGHT.times do |h|
@@ -38,7 +34,14 @@ class Device < Gosu::Window
 		end
 	end
 	def key_status(key)
+		key = key.to_s(16)
 		return Gosu.button_down?( Gosu.char_to_button_id(key) )
+	end
+	def any_key_pressed?()
+		(0..15).any? do |key|
+			return key if key_status(key)
+		end
+		return false
 	end
 end
 
@@ -69,6 +72,7 @@ class Emulator
 		@delay_timer    = 0
 		@sound_timer    = 0
 		@ram            = Emulator::FONT + [0]*(512-16*5) + rom # First 512 bytes are the font and some empty space
+		@ram            += [0]*(1024*4-@ram.length)             # Pad to the whole 4096 bytes
 		@DISPLAY_WIDTH  = 64
 		@DISPLAY_HEIGHT = 32
 		@display        = [0] * (@DISPLAY_HEIGHT*@DISPLAY_WIDTH)
@@ -82,7 +86,8 @@ class Emulator
 	end
 
 	def pretty_print(arg)
-		puts "0x#{h(@instruction)} : #{arg}"
+		op = op = (@ram[@instruction] << 8) | @ram[@instruction+1]
+		puts "0x#{h(@instruction)} : #{h(op).rjust(4,"0")} : #{arg}"
 	end
 
 	def tick()
@@ -109,12 +114,39 @@ class Emulator
 				pretty_print "Ending Emulation - Op Code #{h(op)} Not Implemented"
 				@error = true
 				return
+			rescue
+				dump_ram()
+				raise
 			end
 			@instruction += 2
 		end
 	end
 	
+	def dump_ram()
+		time_stamp = Time.now.getutc.to_i
+		File.open( "#{time_stamp}.dump", "wb") do |f|
+			f.write(@ram)
+		end
+	end
+	
+	def sanity_check()
+		# Check that all registers have valid values
+		raise "Delay Timer #{@delay_timer} out of range (0-255)" if @delay_timer < 0 || @delay_timer > 255
+		raise "Sound Timer #{@sound_timer} out of range (0-255)" if @sound_timer < 0 || @sound_timer > 255
+		16.times do |n|
+			raise "V#{h(@v[n])} out of range (0-255)" if @v[n] < 0 || @v[n] > 255
+		end
+		@ram.each_with_index do |byte,index|
+
+			if byte < 0 || byte > 255 || !byte || byte.class != Fixnum
+				dump_ram()
+				raise "Memory (Value: #{byte}, Address: #{h(index)}) out of range (0-255)" 
+			end
+		end
+	end
+	
 	def handle_op(op)
+		sanity_check()
 		if op == 0x00E0 then          # 00E0 - clear screen
 			cls() 
 		elsif op == 0x00EE then       # 00EE - return
@@ -161,7 +193,7 @@ class Emulator
 			elsif cmd == 0x5 then     # 8XY5: VX = VX - VY (VF set to 0 on borrow)
 				subt_vy_from_vx(a,b)
 			elsif cmd == 0x7 then     # 8XY7: VX = VY - VX (VF set to 0 on borrow)
-				sub_vx_from_vy(a,b)
+				subt_vx_from_vy(a,b)
 			elsif cmd == 0x6 then     # 8X06: VX = VX >> 1 (VF set to bit shifted out) 
 				right_shift_vx(a)
 			elsif cmd == 0xE then     # 8X0E: VX = VX << 1 (VF set to bit shifted out) 
@@ -210,14 +242,16 @@ class Emulator
 
 	def cls()
 		pretty_print "CLS"
-		raise NotImplementedError, "CLS"
+		@display        = [0] * (@DISPLAY_HEIGHT*@DISPLAY_WIDTH)
+		
+		# TODO: Check to see if VF needs to be set to 1 if we're overwritting something.
+		# Gut feeling is no
 	end
 
 	def ret()
 		pretty_print "RET"
 		raise RuntimeError, "Stack Underflow" if @stack.length == 0
 		@instruction = @stack.pop
-		#raise NotImplementedError, "RET"
 	end
 
 	def jmp(address)
@@ -229,15 +263,14 @@ class Emulator
 		## Except - it shouldn't, we need to first execute whatever is at @instructon first
 		## So need to back up one instruction
 		@instruction -= 2
-		#raise NotImplementedError, "JMP"
 	end
 
 	def call(address)
 		pretty_print "CALL #{h(address)}"
-		#raise NotImplementedError("CALL")
 		@stack << @instruction   # Put the current address on top of the stack
 		raise RuntimeError, "Stack Over Flow (Max Depth = 16)" if @stack.length > 16
 		@instruction = address   # Set the next address of execution
+		@instruction -=2  # Go back 2 so that this next instruction get executed properly (see jmp)
 	end
 
 	def set_i(address)
@@ -251,25 +284,24 @@ class Emulator
 	end
 
 	def skip_next_if_vx_equal(vx, val)
-		pretty_print "SKP IF V#{h(vx)} (#{@v[vx]}) == #{h(val)}"
+		pretty_print "SKP IF V#{h(vx)} (#{h(@v[vx])}) == #{h(val)}"
 		@instruction+=2 if @v[vx] == val
-		#raise NotImplementedError, "SKIP IF VX==NN"
 	end
 
 	def skip_next_if_vx_not_equal(vx, val)
 		pretty_print "SKP IF V#{h(vx)} != #{h(val)}"
 		@instruction += 2 if @v[vx] != val
-		#raise NotImplementedError, "SKIP IF VX!=NN"
 	end
 
 	def skip_next_if_vx_equal_vy(vx,vy)
 		pretty_print "SKP IF V#{h(vx)} == V#{h(vy)}"
-		raise NotImplementedError, "SKIP IF VX==VY"
+		@instruction +=2 if @v[vx] == @v[vy]
 	end
 
 	def skip_next_if_vx_not_equal_vy(vx, vy)
 		pretty_print "SKP IF V#{h(vx)} != V#{h(vy)}"
-		raise NotImplementedError, "SKIP IF VX!=VY"
+		
+		@instruction +=2 if @v[vx] != @v[vy]
 	end
 
 	def set_vx(vx, val)
@@ -278,40 +310,34 @@ class Emulator
 	end
 
 	def add_vx(vx, val)
-		pretty_print "SET V#{h(vx)} = V#{h(vx)} + #{h(val)}"
-		#raise NotImplementedError, "VX+=NN"
-		@v[vx] += val
+		old_vx = @v[vx]
+		@v[vx] =  (@v[vx] + val) % 256
+		pretty_print "SET V#{h(vx)} = V#{h(vx)} (#{old_vx}) + #{h(val)} -> (#{@v[vx]})"
 	end
 
 	def set_vx_rand(vx, val)
 		pretty_print "SET V#{h(vx)} = RAND() & #{h(val)}"
-		@v[vx] = (rand(255) & val) % 255
-		#raise NotImplementedError, "VX=RAND()"
+		@v[vx] = (rand(255) & val) % 256
 	end
 
 	def set_vx_to_vy(vx,vy)
-		pretty_print "SET V#{h(vx)} = V#{h(vy)}"
-		
+		pretty_print "SET V#{h(vx)} = V#{h(vy)} (#{@v[vy]}) -> (#{@v[vy]})"
 		@v[vx] = @v[vy]
-		#raise NotImplementedError, "VX=VY"
 	end
 
 	def set_vx_to_vx_or_vy(vx,vy)
-		pretty_print "SET V#{h(vx)} = V#{h(vx)} | V#{h(vy)}"
-		raise NotImplementedError, "VX|=VY"
+		pretty_print "SET V#{h(vx)} = V#{h(vx)} (#{@v[vx]}) | V#{h(vy)} (#{@v[vy]})"
+		@v[vx] |= @v[vy]
 	end
 
 	def set_vx_to_vx_and_vy(vx,vy)
-		pretty_print "SET V#{h(vx)} = V#{h(vx)} & V#{h(vy)}"
-		
+		pretty_print "SET V#{h(vx)} = V#{h(vx)}  (#{@v[vx]}) & V#{h(vy)} (#{@v[vy]})"
 		@v[vx] &= @v[vy]
-		
-		#raise NotImplementedError, "VX&=VY"
 	end
 
 	def set_vx_to_vx_xor_vy(vx,vy)
 		pretty_print "SET V#{h(vx)} = V#{h(vx)} ^ V#{h(vy)}"
-		raise NotImplementedError, "VX^=VY"
+		@v[vx] ^= @v[vy]
 	end
 
 	def add_vy_to_vx(vx,vy)
@@ -321,9 +347,7 @@ class Emulator
 		result = @v[vx] + @v[vy]
 		
 		@v[0xF] = 1 if result > 255 # Overflow
-		@v[vx] = result % 255
-		
-		#raise NotImplementedError, "VX+=VY"
+		@v[vx] = result % 256
 	end
 
 	def subt_vy_from_vx(vx,vy)
@@ -334,40 +358,61 @@ class Emulator
 			@v[0xF] = 1 # No borrow
 			@v[vx] -= @v[vy]
 		else
-			@v[vx]  = 0 # Underflow?
+			@v[vx]  = (@v[vx] - @v[vy])%256
 			@v[0xF] = 0 # Borrow
 		end
-
-		#raise NotImplementedError, "VX-=VY"
 	end
 
-	def sub_vx_from_vy(vx,vy)
+	def subt_vx_from_vy(vx,vy)
 		# 8XY7: VX = VY - VX (VF set to 0 on borrow)
 		pretty_print "SET V#{h(vx)} = V#{h(vy)} - V#{h(vx)}"
-		raise NotImplementedError, "VX=VY-VX"
+		
+		if @v[vx] < @v[vy] then
+			@v[0xF] = 1 # No borrow
+			@v[vx]  = @v[vy] - @v[vx]
+		else
+			@v[vx]  = (@v[vy] - @v[vx])%256
+			@v[0xF] = 0 # Borrow
+		end
 	end
 
 	def right_shift_vx(vx)
+		# 8X06 : VX = VX >> 1
+		# Set VX equal to VX bitshifted right 1. 
+		# VF is set to the least significant bit of VX prior to the shift.
+		# Originally this opcode meant set VX equal to VY bitshifted right 1
+		# but emulators and software seem to ignore VY now.
+		# Note: This instruction was originally undocumented but functional
+		# due to how the 8XXX instructions were implemented on teh COSMAC VIP.
+		# (from https://github.com/trapexit/chip-8_documentation)
+		#
+		# Essentially any CHIP-8 game written before the superchip depends on
+		# Vx = Vy << 1 and any CHIP-8 game written after the superchip
+		# (including SCHIP-8 games) depend on `Vx = Vx << 1`
 		pretty_print "SET V#{h(vx)} = V#{h(vx)} >> 1"
-		raise NotImplementedError, "VX>>1"
+		
+		@v[0xF] = @v[vx] & 1 # LSB
+		@v[vx]  = @v[vx] >> 1
 	end
 
 	def left_shift_vx(vx)
+		# 8XOE : VX = VX << 1
+		# VF = MSB of VB (prior to the shift)
 		pretty_print "SET V#{h(vx)} = V#{h(vx)} << 1"
-		raise NotImplementedError, "VX<<1"
+		
+		@v[0xF] = (@v[vx] >> 7) & 1 # MSB
+		@v[vx]  = (@v[vx] << 1) % 256
 	end
 
 	def skip_if_pressed(vx)
 		pretty_print "SKP IF KEY IN #{h(vx)} IS DOWN"
 		
-		@instruction += 2 if @device.key_status( @v[vx] )		
-		#raise NotImplementedError, "KEY DOWN"
+		@instruction += 2 if @device.key_status( @v[vx] )
 	end
 
 	def skip_if_not_pressed(vx)
 		pretty_print "SKP IF KEY IN #{h(vx)} IS NOT DOWN"
 		@instruction +=2 if !@device.key_status( @v[vx] )
-		#raise NotImplementedError, "KEY NOT DOWN"
 	end
 
 	def draw(vx, vy, n)
@@ -375,64 +420,67 @@ class Emulator
 		# onto the screen starting at (vx,vy) [upper left corner]
 		# See http://craigthomas.ca/blog/2015/02/19/writing-a-chip-8-emulator-draw-command-part-3/
 		# For more explanation
-		pretty_print "DRAW AT (#{h(vx)}, #{h(vy)}) Length: #{h(n)}"
-		#raise NotImplementedError("DRAW")
+		pretty_print "DRAW AT V#{h(vx)}, V#{h(vy)} (#{@v[vx]},#{@v[vy]}) Length: #{h(n)}"
+		@v[0xF] = 0 # Clear the collision flag (no collision just yet, right?)
 		
-		y = @v[vy]
+		y = @v[vy] % @DISPLAY_HEIGHT
 		n.times do |n|
-			x = @v[vx]                           # Recalculate X (left) at the start of each loop
+			x = @v[vx] % @DISPLAY_WIDTH          # Recalculate X (left) at the start of each loop
 			byte = @ram[@index + n]              # This is one byte of the sprite
 			bit = 7                           
 			while bit >= 0 do
-				new_state = (byte >> bit) & 0x1  
-				#puts new_state
-				result = @display[ y*@DISPLAY_WIDTH + x] ^= new_state
-				#puts result
-				#puts @v[0xF]
-				
-				@v[0xF] |= (new_state^1) & result # Set VF=1 if the sprite was blank (new_state=0)
-												  # but the previous pixel was turned on
-												  # This will keep the pixel on, but just set the flag
-												  # I think..
+				new_state = (byte >> bit) & 0x1
+				old_state = @display[ y*@DISPLAY_WIDTH + x]
+				@display[ y*@DISPLAY_WIDTH + x] ^= new_state
+				@v[0xF] |= (new_state & old_state) # Collision detection works by checking to 
+											       # see if both the old and the new states
+												   # are on - if they're both on, the pixel is blank
+												   # and we set the collision flag
 				
 				x = (x+1) % @DISPLAY_WIDTH
 				bit -= 1
 			end
 			y = (y+1) % @DISPLAY_HEIGHT # Overflow to the top
 		end
-		
 	end
 
 	def wait_for_keypress(vx)
 		#FX0A: Wait for key press, store in VX
 		pretty_print "WAIT -> #{h(vx)}"
-		raise NotImplementedError, "WAIT FOR KEY"
+		key_pressed = @device.any_key_pressed?()
+		if key_pressed then
+			@v[vx] = key_pressed
+		else
+			# TODO:: Fix this somehow - maybe put a flag in the tick() loop which
+			# will halt any execution until a key is presesd. But this should work
+			# for now.
+			@instruction -=2
+		end
 	end
 
 	def set_vx_to_delay_timer(vx)
 		#FX07: VX = Delay Timer value
 		pretty_print "SET V#{h(vx)} to DELAY TIMER"
 		@v[vx] = @delay_timer
-		#raise NotImplementedError, "SET VX=DELAY"
 	end
 
 	def set_delay_timer_to_vx(vx)
 		#FX15: Delay Timer = VX
 		pretty_print "SET DELAY TIMER TO V#{h(vx)}"
 		@delay_timer = @v[vx]
-		#raise NotImplementedError, "SET DELAY=VX"
 	end
 
 	def set_sound_timer_to_vx(vx)
 		#FX18: Sound Timer = VX
 		pretty_print "SET SOUND TIMER TO V#{h(vx)}"
-		raise NotImplementedError, "SET TIMER=VX"
+		@sound_timer = @v[vx]
 	end
 
 	def increment_index_register(vx)
 		#FX1E: I += VX
-		pretty_print "I += V#{h(vx)}"
-		raise NotImplementedError, "I+=VX"
+		original_index = @index
+		@index += @v[vx]
+		pretty_print "I = I(#{h(original_index)}) + V#{h(vx)} (#{@v[vx]}) -> #{h(@index)}"
 	end
 
 	def set_index_register_to_sprite(vx)
@@ -440,7 +488,6 @@ class Emulator
 		# These are the built in fonts for characters 0-F
 		pretty_print "I = SPRITE(V#{h(vx)})"
 		@index = @v[vx]*5 # Each font sprite is five bytes "tall"
-		#raise NotImplementedError, "I=SPRITE"
 	end
 
 	def set_bcd_of_vx(vx)
@@ -448,31 +495,37 @@ class Emulator
 		pretty_print "I = BCD(V#{h(vx)})"
 		value = @v[vx]
 		@ram[@index]   = value / 100
-		@ram[@index+1] = value % 100
+		@ram[@index+1] = (value % 100) / 10
 		@ram[@index+2] = value % 10
-		#raise NotImplementedError("I=BCD")
 	end
 
 	def copy_vx_to_memory(vx)
 		#FX55: Stores V0-VX in memory at address I. I += N + 1
 		pretty_print "COPY V0-V#{h(vx)} TO *I"
-		raise NotImplementedError, "*I_N = *VX"
+		
+		(vx+1).times do |n| # Because V0 is a valid argument 
+			@ram[@index	+n] = @v[n]
+		end
 	end
 
 	def copy_memory_to_vx(vx)
 		# FX65: Fills V0-VX with memory from address I. I += N + 1
 		pretty_print "COPY *I TO V0-V#{h(vx)}"
-		vx.times do |n|
-			@v[n] = @ram[@index + n] % 255
+		(vx+1).times do |n| # Because V0 is a valid argument
+			@v[n] = @ram[@index + n] % 256
 		end
-		#raise NotImplementedError, "V_X = *I_N"
 	end
 
 end
 
 
 def main()
-	rom = load_rom("ROMS/PONG")
+	rom_name = ARGV[0]
+	if ARGV.length ==0 then
+		puts "emu.rb <name of ROM>"
+		returnr
+	end
+	rom = load_rom("ROMS/#{rom_name}")
 	emu = Emulator.new(rom)
 	dev = Device.new(emu)
 	dev.show()

@@ -1,14 +1,21 @@
-f = File.open("ROMS/PONG", "rb")
+rom_name = ARGV[0]
+if ARGV.length ==0 then
+	puts "emu.rb <name of ROM>"
+	exit
+end
+f = File.open("ROMS/#{rom_name}", "rb")
+
 rom = f.read
 
-$address = 0x200
+$address    = 0x200
+$current_op = 0x0
 
 def h(n)
 	n.to_s(16)
 end
 
 def pretty_print(arg)
-	puts "0x#{h($address)} : #{arg}"
+	puts "0x#{h($address)} : #{h($current_op).rjust(4,"0")}:  #{arg}"
 end
 
 def cls()
@@ -163,6 +170,7 @@ end
 
 rom.split("").each_slice(2) do |op_arr|
 	op = op_arr.join.unpack("n").first
+	$current_op = op
 	#pretty_print op.to_s(16)
 	
 	# Exact Match OP-codes
