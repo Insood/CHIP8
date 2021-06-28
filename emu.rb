@@ -523,7 +523,7 @@ def main()
 	rom_name = ARGV[0]
 	if ARGV.length ==0 then
 		puts "emu.rb <name of ROM>"
-		returnr
+		return
 	end
 	rom = load_rom("ROMS/#{rom_name}")
 	emu = Emulator.new(rom)
