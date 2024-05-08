@@ -1,4 +1,6 @@
-source 'http://rubygems.org'
-ruby '2.4.3'
+# frozen_string_literal: true
 
-gem 'gosu', '0.14.5'
+source 'http://rubygems.org'
+ruby '3.3.1'
+
+gem 'gosu'

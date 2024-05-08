@@ -1,9 +1,10 @@
 # CHIP8
 Chip8 Emulator in Ruby
 
-License: Do what you want with it.
+License: MIT
 
-Dependencies: Gosu (for emulating the screen)
+Dependencies:
+* Gosu. Installation depends on your system. See: https://github.com/gosu/gosu/wiki
 
 Usage:
 1) Place ROMs in the ROMS/ folder
